@@ -1,3 +1,4 @@
+pub mod resolver;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::{env, io};
