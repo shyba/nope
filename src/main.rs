@@ -1,9 +1,9 @@
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::{env, io};
 use tokio::net::UdpSocket;
-use std::net::SocketAddr;
-use std::collections::HashMap;
 
-const MAX_UDP_SIZE: usize = 1<<16;
+const MAX_UDP_SIZE: usize = 1 << 16;
 
 struct DNSForwarderServer {
     socket: UdpSocket,
@@ -62,5 +62,7 @@ async fn main() -> Result<(), std::io::Error> {
     DNSForwarderServer {
         socket,
         upstream: "1.1.1.1:53".parse().expect("invalid upstream"),
-    }.run().await
+    }
+    .run()
+    .await
 }
