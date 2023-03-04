@@ -1,12 +1,13 @@
-use std::{io, net::SocketAddr};
+use std::{io, net::SocketAddr, sync::atomic::AtomicU16};
 
 use futures::future::join_all;
+use log::debug;
 use tokio::net::UdpSocket;
 
 pub struct DNSResolver {
     upstream: Vec<SocketAddr>,
     strategy: ResolutionStrategy,
-    counter: u16,
+    counter: AtomicU16,
 }
 
 pub enum ResolutionStrategy {
@@ -25,24 +26,35 @@ impl Default for DNSResolver {
 }
 
 impl DNSResolver {
-    pub fn pick_upstream(&self, request_id: u16) -> &[SocketAddr] {
+    pub fn produce_upstreams(&self) -> &[SocketAddr] {
+        let current = self
+            .counter
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         match self.strategy {
             ResolutionStrategy::All => &self.upstream[..],
             ResolutionStrategy::RoundRobin => {
-                std::slice::from_ref(&self.upstream[request_id as usize % self.upstream.len()])
+                std::slice::from_ref(&self.upstream[current as usize % self.upstream.len()])
             }
         }
     }
 
-    pub async fn send_request(&mut self, req: &[u8], socket: UdpSocket) -> Result<(), io::Error> {
-        self.counter = self.counter.wrapping_add(1);
+    pub async fn send_request(
+        &mut self,
+        req: &mut [u8],
+        socket: &UdpSocket,
+    ) -> Result<(), io::Error> {
         let futures: Vec<_> = self
-            .pick_upstream(self.counter)
+            .produce_upstreams()
             .iter()
-            .map(|upstream| socket.send_to(req, upstream))
+            .map(|target| Self::do_send(req, &socket, target))
             .collect();
         join_all(futures).await;
         Ok(())
+    }
+
+    async fn do_send(req: &[u8], socket: &UdpSocket, target: &SocketAddr) -> io::Result<usize> {
+        debug!("sending {} bytes to {}", req.len(), target);
+        socket.send_to(req, target).await
     }
 }
 
@@ -55,11 +67,11 @@ mod test {
         let resolver = DNSResolver {
             upstream: upstream.clone(),
             strategy: ResolutionStrategy::RoundRobin,
-            counter: 0,
+            counter: AtomicU16::new(0),
         };
-        assert_eq!(&[upstream[0]], resolver.pick_upstream(0));
-        assert_eq!(&[upstream[1]], resolver.pick_upstream(1));
-        assert_eq!(&[upstream[0]], resolver.pick_upstream(2));
+        assert_eq!(&[upstream[0]], resolver.produce_upstreams());
+        assert_eq!(&[upstream[1]], resolver.produce_upstreams());
+        assert_eq!(&[upstream[0]], resolver.produce_upstreams());
     }
 
     #[test]
@@ -68,10 +80,10 @@ mod test {
         let resolver = DNSResolver {
             upstream: upstream.clone(),
             strategy: ResolutionStrategy::All,
-            counter: 0,
+            counter: AtomicU16::new(0),
         };
-        assert_eq!(&upstream[..], resolver.pick_upstream(0));
-        assert_eq!(&upstream[..], resolver.pick_upstream(1));
-        assert_eq!(&upstream[..], resolver.pick_upstream(2));
+        assert_eq!(&upstream[..], resolver.produce_upstreams());
+        assert_eq!(&upstream[..], resolver.produce_upstreams());
+        assert_eq!(&upstream[..], resolver.produce_upstreams());
     }
 }
